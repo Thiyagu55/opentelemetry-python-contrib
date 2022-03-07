@@ -19,6 +19,7 @@ from typing import Callable
 
 from django import VERSION as django_version
 from django.http import HttpRequest, HttpResponse
+from django.db import connection
 
 from opentelemetry.context import detach
 from opentelemetry.instrumentation.propagators import (
@@ -36,6 +37,7 @@ from opentelemetry.instrumentation.wsgi import wsgi_getter
 from opentelemetry.semconv.trace import SpanAttributes
 from opentelemetry.trace import Span, use_span
 from opentelemetry.util.http import get_excluded_urls, get_traced_request_attrs
+from opentelemetry.instrumentation.utils import _generate_opentelemetry_traceparent, _generate_sql_comment
 
 try:
     from django.core.urlresolvers import (  # pylint: disable=no-name-in-module
@@ -44,6 +46,25 @@ try:
     )
 except ImportError:
     from django.urls import Resolver404, resolve
+
+
+class QueryWrapper:
+    def __init__(self, request):
+        self.request = request
+
+    def __call__(self, execute, sql, params, many, context):
+        span = self.request.META['opentelemetry-instrumentor-django.span_key']
+        sql += QueryWrapper._generate_comment(span)
+        return execute(sql, params, many, context)
+
+    @staticmethod
+    def _generate_comment(span: Span) -> str:
+        span_context = span.get_span_context()
+        meta = {}
+        if span_context.is_valid:
+            meta.update(_generate_opentelemetry_traceparent(span))
+        return _generate_sql_comment(**meta)
+
 
 DJANGO_2_0 = django_version >= (2, 0)
 DJANGO_3_0 = django_version >= (3, 0)
@@ -136,6 +157,13 @@ class _DjangoMiddleware(MiddlewareMixin):
     _otel_response_hook: Callable[
         [Span, HttpRequest, HttpResponse], None
     ] = None
+    _enable_commenter = False
+
+    def __call__(self, request):
+        if _DjangoMiddleware._enable_commenter:
+            with connection.execute_wrapper(QueryWrapper(request)):
+                return super(_DjangoMiddleware,self).__call__(request)
+        return super(_DjangoMiddleware,self).__call__(request)
 
     @staticmethod
     def _get_span_name(request):

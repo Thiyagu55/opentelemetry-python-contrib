@@ -143,6 +143,7 @@ class DjangoInstrumentor(BaseInstrumentor):
         _DjangoMiddleware._otel_response_hook = kwargs.pop(
             "response_hook", None
         )
+        _DjangoMiddleware._enable_commenter = kwargs.pop("enable_commenter", False)
 
         # This can not be solved, but is an inherent problem of this approach:
         # the order of middleware entries matters, and here you have no control
